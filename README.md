@@ -8,7 +8,7 @@ uv add marimo
 
 To then run marimo you can use the following:
 ```
-uv run marimo edit test.py
+uv run marimo edit supplier_check.py
 ```
 Or can simply run it as a script with the following:
 ```
