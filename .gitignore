@@ -5,3 +5,4 @@ award_contracts.xlsx
 __marimo__
 .venv
 .gitignore
+.env
