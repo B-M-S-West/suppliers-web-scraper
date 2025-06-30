@@ -298,31 +298,63 @@ def _(BATCH_SIZE, fetch_award_batch, generate_weekly_chunks, time):
     return (all_releases,)
 
 
+@app.function
+def should_include_record(record):
+    """Check if record contains any of the target CPV codes"""
+    target_cpv_codes = {
+        '48000000', '48100000', '48200000', '48300000', '48400000', 
+        '48500000', '48600000', '48700000', '48800000', '48900000',
+        '72000000', '72100000', '72200000', '72300000', '72400000', 
+        '72500000', '72600000', '72700000', '72800000', '72900000'
+    }
+
+    cpv_codes = record.get('CPV_Codes', '')
+    if not cpv_codes:
+        return False
+
+    # Split the semicolon-separated CPV codes and check each one
+    record_cpv_codes = [code.strip() for code in cpv_codes.split(';') if code.strip()]
+
+    # Check if any of the record's CPV codes match our target codes
+    for code in record_cpv_codes:
+        if code in target_cpv_codes:
+            return True
+
+    return False
+
+
 @app.cell
 def _(all_releases, extract_award_records):
     # Process releases
     print("Processing releases...")
     all_records = []
+    filtered_records = []
+
     for i, release in enumerate(all_releases):
         try:
             records = extract_award_records(release)
             all_records.extend(records)
 
+            # Filter records based on CPV codes
+            for record in records:
+                if should_include_record(record):
+                    filtered_records.append(record)
+
             if (i + 1) % 50 == 0:
-                print(f"Processed {i + 1} releases, extracted {len(all_records)} records")
+                print(f"Processed {i + 1} releases, extracted {len(all_records)} records, {len(filtered_records)} filtered records")
 
         except Exception as e:
             print(f"Error processing release {release.get('id', 'unknown')}: {e}")
 
-    print(f"Finished processing. Total records: {len(all_records)}")
-    return (all_records,)
+    print(f"Finished processing. Total records: {len(all_records)}, Filtered records: {len(filtered_records)}")
+    return (filtered_records,)
 
 
 @app.cell
-def _(all_records, datetime, pd, upload_to_airtable):
+def _(datetime, filtered_records, pd, upload_to_airtable):
     # Create DataFrame and save
-    if all_records:
-        df = pd.DataFrame(all_records)
+    if filtered_records:
+        df = pd.DataFrame(filtered_records)
 
         # Check if DataFrame has the expected columns
         print("Columns in DataFrame:", df.columns.tolist())
@@ -371,13 +403,13 @@ def _(all_records, datetime, pd, upload_to_airtable):
         print("\n" + "="*50)
         print("UPLOADING TO AIRTABLE")
         print("="*50)
-    
+
         try:
-            uploaded, failed = upload_to_airtable(all_records)
+            uploaded, failed = upload_to_airtable(filtered_records)
             print(f"\nAirtable upload summary:")
             print(f"- Successfully uploaded: {uploaded} records")
             print(f"- Failed uploads: {failed} records")
-        
+
         except Exception as e:
             print(f"Error during Airtable upload: {e}")
 
@@ -391,89 +423,84 @@ def _(table, time):
     def format_for_airtable(record):
         """Format a record for Airtable upload"""
         airtable_record = {}
-    
+
         # Handle text fields
         text_fields = ['OCID', 'Release_ID', 'Title', 'Description', 'Buyer_Name', 'Currency']
         for field in text_fields:
             if record.get(field):
                 airtable_record[field] = str(record[field])
-    
+
         # Handle date fields
         date_fields = ['Release_Date', 'Award_Date', 'Contract_Start_Date', 'Contract_End_Date']
         for field in date_fields:
             if record.get(field):
                 airtable_record[field] = record[field]
-    
+
         # Handle currency field
         if record.get('Contract_Value') is not None:
             airtable_record['Contract_Value'] = float(record['Contract_Value'])
-    
+
         # Handle single select fields
         if record.get('Buyer_Name'):
             airtable_record['Buyer_Name'] = record['Buyer_Name']
         if record.get('Award_Status'):
             airtable_record['Award_Status'] = record['Award_Status']
-    
+
         # Handle multi-select fields (convert semicolon-separated to list)
         if record.get('Supplier_Name'):
             suppliers = [s.strip() for s in record['Supplier_Name'].split(';') if s.strip()]
             airtable_record['Supplier_Name'] = suppliers
-    
+
         if record.get('CPV_Codes'):
             codes = [c.strip() for c in record['CPV_Codes'].split(';') if c.strip()]
             airtable_record['CPV_Codes'] = codes
-    
+
         if record.get('CPV_Descriptions'):
             descriptions = [d.strip() for d in record['CPV_Descriptions'].split(';') if d.strip()]
             airtable_record['CPV_Descriptions'] = descriptions
-    
+
         # Handle URL field
         if record.get('Notice_URL'):
             airtable_record['Notice_URL'] = record['Notice_URL']
-    
+
         return airtable_record
 
     def upload_to_airtable(records, batch_size=10):
         """Upload records to Airtable in batches"""
         print(f"Uploading {len(records)} records to Airtable...")
-    
+
         # Format records for Airtable
         airtable_records = []
         for record in records:
             formatted_record = format_for_airtable(record)
             if formatted_record:  # Only add non-empty records
                 airtable_records.append(formatted_record)
-    
+
         print(f"Formatted {len(airtable_records)} records for upload")
-    
+
         # Upload in batches
         uploaded_count = 0
         failed_count = 0
-    
+
         for i in range(0, len(airtable_records), batch_size):
             batch = airtable_records[i:i + batch_size]
-        
+
             try:
                 # Use typecast=True to allow new values for select fields
                 result = table.batch_create(batch, typecast=True)
                 uploaded_count += len(result)
                 print(f"Uploaded batch {i//batch_size + 1}: {len(result)} records")
-            
+
                 # Rate limiting
                 time.sleep(0.2)
-            
+
             except Exception as e:
                 print(f"Error uploading batch {i//batch_size + 1}: {e}")
                 failed_count += len(batch)
-    
+
         print(f"Upload complete: {uploaded_count} successful, {failed_count} failed")
         return uploaded_count, failed_count
     return (upload_to_airtable,)
-
-
-@app.cell
-def _():
-    return
 
 
 if __name__ == "__main__":
